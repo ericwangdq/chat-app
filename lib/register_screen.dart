@@ -1,18 +1,18 @@
 import 'package:flutter/material.dart';
 import 'auth_service.dart';
 import 'chat_screen.dart';
-import 'register_screen.dart';
 
-class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key});
+class RegisterScreen extends StatefulWidget {
+  const RegisterScreen({super.key});
 
   @override
-  State<LoginScreen> createState() => _LoginScreenState();
+  State<RegisterScreen> createState() => _RegisterScreenState();
 }
 
-class _LoginScreenState extends State<LoginScreen> {
+class _RegisterScreenState extends State<RegisterScreen> {
   final _usernameController = TextEditingController();
   final _passwordController = TextEditingController();
+  final _confirmPasswordController = TextEditingController();
   final _authService = AuthService();
   bool _isLoading = false;
   String? _errorMessage;
@@ -21,10 +21,11 @@ class _LoginScreenState extends State<LoginScreen> {
   void dispose() {
     _usernameController.dispose();
     _passwordController.dispose();
+    _confirmPasswordController.dispose();
     super.dispose();
   }
 
-  Future<void> _login() async {
+  Future<void> _register() async {
     setState(() {
       _isLoading = true;
       _errorMessage = null;
@@ -32,17 +33,43 @@ class _LoginScreenState extends State<LoginScreen> {
 
     final username = _usernameController.text.trim();
     final password = _passwordController.text.trim();
+    final confirmPassword = _confirmPasswordController.text.trim();
 
-    if (username.isEmpty || password.isEmpty) {
+    // Validation
+    if (username.isEmpty || password.isEmpty || confirmPassword.isEmpty) {
       setState(() {
-        _errorMessage = 'Please enter username and password';
+        _errorMessage = 'Please fill in all fields';
+        _isLoading = false;
+      });
+      return;
+    }
+
+    if (username.length < 3) {
+      setState(() {
+        _errorMessage = 'Username must be at least 3 characters';
+        _isLoading = false;
+      });
+      return;
+    }
+
+    if (password.length < 6) {
+      setState(() {
+        _errorMessage = 'Password must be at least 6 characters';
+        _isLoading = false;
+      });
+      return;
+    }
+
+    if (password != confirmPassword) {
+      setState(() {
+        _errorMessage = 'Passwords do not match';
         _isLoading = false;
       });
       return;
     }
 
     try {
-      final result = await _authService.login(username, password);
+      final result = await _authService.register(username, password);
       if (!mounted) return;
 
       if (result['success'] == true) {
@@ -56,7 +83,7 @@ class _LoginScreenState extends State<LoginScreen> {
         );
       } else {
         setState(() {
-          _errorMessage = result['error'] as String? ?? 'Login failed';
+          _errorMessage = result['error'] as String? ?? 'Registration failed';
           _isLoading = false;
         });
       }
@@ -73,7 +100,7 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Login'),
+        title: const Text('Register'),
       ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
@@ -81,7 +108,7 @@ class _LoginScreenState extends State<LoginScreen> {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             const Text(
-              'Chat App',
+              'Create Account',
               style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 48),
@@ -90,7 +117,7 @@ class _LoginScreenState extends State<LoginScreen> {
               decoration: const InputDecoration(
                 labelText: 'Username',
                 border: OutlineInputBorder(),
-                hintText: 'alice or bob',
+                hintText: 'At least 3 characters',
               ),
               enabled: !_isLoading,
             ),
@@ -100,11 +127,22 @@ class _LoginScreenState extends State<LoginScreen> {
               decoration: const InputDecoration(
                 labelText: 'Password',
                 border: OutlineInputBorder(),
-                hintText: 'password123',
+                hintText: 'At least 6 characters',
               ),
               obscureText: true,
               enabled: !_isLoading,
-              onSubmitted: (_) => _login(),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _confirmPasswordController,
+              decoration: const InputDecoration(
+                labelText: 'Confirm Password',
+                border: OutlineInputBorder(),
+                hintText: 'Re-enter password',
+              ),
+              obscureText: true,
+              enabled: !_isLoading,
+              onSubmitted: (_) => _register(),
             ),
             const SizedBox(height: 24),
             if (_errorMessage != null)
@@ -118,33 +156,20 @@ class _LoginScreenState extends State<LoginScreen> {
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(
-                onPressed: _isLoading ? null : _login,
+                onPressed: _isLoading ? null : _register,
                 child: _isLoading
                     ? const SizedBox(
                         height: 20,
                         width: 20,
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
-                    : const Text('Login'),
+                    : const Text('Register'),
               ),
             ),
             const SizedBox(height: 16),
             TextButton(
-              onPressed: _isLoading
-                  ? null
-                  : () {
-                      Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (context) => const RegisterScreen(),
-                        ),
-                      );
-                    },
-              child: const Text('Don\'t have an account? Register'),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Demo users: alice/bob, password: password123',
-              style: TextStyle(fontSize: 12, color: Colors.grey),
+              onPressed: _isLoading ? null : () => Navigator.pop(context),
+              child: const Text('Already have an account? Login'),
             ),
           ],
         ),

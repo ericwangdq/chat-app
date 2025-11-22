@@ -4,33 +4,66 @@ const WebSocket = require("ws");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
+const Database = require("better-sqlite3");
+const path = require("path");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const messages = [];
 const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key-change-in-production";
 
-// In-memory user storage (for demo purposes)
-// In production, use a real database
-const users = new Map();
+// Initialize SQLite database
+const dbPath = path.join(__dirname, "chat.db");
+const db = new Database(dbPath);
+
+// Create tables
+function initializeDatabase() {
+  // Users table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT UNIQUE NOT NULL,
+      password TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Messages table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      author TEXT NOT NULL,
+      text TEXT NOT NULL,
+      ts DATETIME NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  console.log("Database initialized");
+
+  // Create demo users if they don't exist
+  createDemoUsers();
+}
 
 // Helper function to create demo users
-function initializeDemoUsers() {
+function createDemoUsers() {
   const demoUsers = [
     { username: "alice", password: "password123" },
     { username: "bob", password: "password123" },
   ];
 
+  const insertUser = db.prepare("INSERT OR IGNORE INTO users (username, password) VALUES (?, ?)");
+
   demoUsers.forEach(user => {
     const hashedPassword = bcrypt.hashSync(user.password, 10);
-    users.set(user.username, { username: user.username, password: hashedPassword });
+    insertUser.run(user.username, hashedPassword);
   });
+
   console.log("Demo users initialized: alice, bob (password: password123)");
 }
 
-initializeDemoUsers();
+initializeDatabase();
 
 // Login endpoint
 app.post("/login", (req, res) => {
@@ -40,7 +73,9 @@ app.post("/login", (req, res) => {
     return res.status(400).json({ error: "Username and password required" });
   }
 
-  const user = users.get(username);
+  const stmt = db.prepare("SELECT * FROM users WHERE username = ?");
+  const user = stmt.get(username);
+
   if (!user) {
     return res.status(401).json({ error: "Invalid credentials" });
   }
@@ -54,7 +89,7 @@ app.post("/login", (req, res) => {
   res.json({ token, username: user.username });
 });
 
-// Register endpoint (optional, for creating new users)
+// Register endpoint
 app.post("/register", (req, res) => {
   const { username, password } = req.body;
 
@@ -62,15 +97,34 @@ app.post("/register", (req, res) => {
     return res.status(400).json({ error: "Username and password required" });
   }
 
-  if (users.has(username)) {
+  if (username.length < 3) {
+    return res.status(400).json({ error: "Username must be at least 3 characters" });
+  }
+
+  if (password.length < 6) {
+    return res.status(400).json({ error: "Password must be at least 6 characters" });
+  }
+
+  // Check if user already exists
+  const checkStmt = db.prepare("SELECT username FROM users WHERE username = ?");
+  const existingUser = checkStmt.get(username);
+
+  if (existingUser) {
     return res.status(409).json({ error: "Username already exists" });
   }
 
+  // Create new user
   const hashedPassword = bcrypt.hashSync(password, 10);
-  users.set(username, { username, password: hashedPassword });
+  try {
+    const insertStmt = db.prepare("INSERT INTO users (username, password) VALUES (?, ?)");
+    insertStmt.run(username, hashedPassword);
 
-  const token = jwt.sign({ username }, JWT_SECRET, { expiresIn: "24h" });
-  res.json({ token, username });
+    const token = jwt.sign({ username }, JWT_SECRET, { expiresIn: "24h" });
+    res.json({ token, username });
+  } catch (error) {
+    console.error("Registration error:", error);
+    res.status(500).json({ error: "Failed to register user" });
+  }
 });
 
 // JWT middleware for REST endpoints
@@ -91,8 +145,28 @@ function authenticateToken(req, res, next) {
   });
 }
 
+// Get message history
 app.get("/history", authenticateToken, (req, res) => {
-  res.json(messages);
+  try {
+    const stmt = db.prepare("SELECT author, text, ts FROM messages ORDER BY id DESC LIMIT 200");
+    const messages = stmt.all();
+    res.json(messages);
+  } catch (error) {
+    console.error("Error fetching history:", error);
+    res.status(500).json({ error: "Failed to fetch message history" });
+  }
+});
+
+// Get all users
+app.get("/users", authenticateToken, (req, res) => {
+  try {
+    const stmt = db.prepare("SELECT id, username, created_at FROM users ORDER BY created_at DESC");
+    const users = stmt.all();
+    res.json(users);
+  } catch (error) {
+    console.error("Error fetching users:", error);
+    res.status(500).json({ error: "Failed to fetch users" });
+  }
 });
 
 const port = process.env.PORT || 3000;
@@ -129,10 +203,25 @@ wss.on("connection", (ws, req) => {
           text: parsed.text,
           ts: new Date().toISOString()
         };
-        messages.push(msg);
-        // keep history small
-        if (messages.length > 200) messages.shift();
-        // broadcast
+
+        // Save message to database
+        try {
+          const insertStmt = db.prepare("INSERT INTO messages (author, text, ts) VALUES (?, ?, ?)");
+          insertStmt.run(msg.author, msg.text, msg.ts);
+
+          // Keep only last 200 messages
+          const deleteOldStmt = db.prepare(`
+            DELETE FROM messages
+            WHERE id NOT IN (
+              SELECT id FROM messages ORDER BY id DESC LIMIT 200
+            )
+          `);
+          deleteOldStmt.run();
+        } catch (dbError) {
+          console.error("Error saving message:", dbError);
+        }
+
+        // Broadcast to all connected clients
         wss.clients.forEach((client) => {
           if (client.readyState === WebSocket.OPEN) {
             client.send(JSON.stringify(msg));
@@ -149,4 +238,12 @@ wss.on("connection", (ws, req) => {
 
 server.listen(port, () => {
   console.log(`Server listening on http://localhost:${port}`);
+  console.log(`Database location: ${dbPath}`);
+});
+
+// Graceful shutdown
+process.on("SIGINT", () => {
+  console.log("\nShutting down gracefully...");
+  db.close();
+  process.exit(0);
 });
